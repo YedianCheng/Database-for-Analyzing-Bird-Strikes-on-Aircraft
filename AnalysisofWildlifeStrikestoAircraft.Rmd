@@ -1,0 +1,413 @@
+---
+title: "Analysis of Wildlife Strikes to Aircraft"
+author: "Edie"
+output:
+  html_document:
+    df_print: paged
+  pdf_document: default
+---
+
+```{r setup, include=FALSE, echo = FALSE}
+# google how to not display "## Loading required package: DBI" in html
+# knitr::opts_chunk$set(message = FALSE, warning = FALSE)
+# Load the DBI library
+library(DBI)
+# Load the RMySQL library
+library(RMySQL)
+```
+
+```{r connectToDatabase, echo = FALSE, eval = TRUE, warning = FALSE}
+# Set database connection parameters
+db_name_fh <- "sql3716872"
+db_user_fh <- "sql3716872"
+db_host_fh <- "sql3.freemysqlhosting.net"
+db_pwd_fh <- "FVTTRYYj9l"
+db_port_fh <- 3306
+
+# Connect to the remote server database
+mydb.fh <-  dbConnect(RMySQL::MySQL(), user = db_user_fh, password = db_pwd_fh,
+                      dbname = db_name_fh, host = db_host_fh, port = db_port_fh)
+mydb <- mydb.fh
+```
+
+```{r disableForeignKeyCheck, echo=FALSE, eval = TRUE, warning = FALSE}
+# disable foreign key checks to allow data insertion without enforcing foreign key constraints
+result <- dbExecute(mydb, "SET foreign_key_checks = 0;")
+```
+
+```{r createTables, echo=FALSE, eval = TRUE, warning = FALSE}
+# create airports table, google to find that text can not have a default value
+result <- dbExecute(mydb, "DROP TABLE IF EXISTS airports")
+result <- dbExecute(mydb, "
+CREATE TABLE IF NOT EXISTS airports (
+  aid INTEGER PRIMARY KEY,
+  airportName TEXT,
+  airportState TEXT,
+  airportCode VARCHAR(3) DEFAULT 'ZZZ'
+)
+")
+
+# create flights table
+result <- dbExecute(mydb, "DROP TABLE IF EXISTS flights")
+result <- dbExecute(mydb, "
+CREATE TABLE IF NOT EXISTS flights (
+  fid INTEGER PRIMARY KEY,
+  date DATETIME,
+  originAirport INTEGER,
+  airlineName TEXT,
+  aircraftType TEXT,
+  isHeavy BOOLEAN,
+  FOREIGN KEY (originAirport) REFERENCES airports(aid)
+)
+")
+
+# create a lookup table called conditions
+result <- dbExecute(mydb, "DROP TABLE IF EXISTS conditions")
+result <- dbExecute(mydb, "
+CREATE TABLE IF NOT EXISTS conditions (
+  cid INTEGER AUTO_INCREMENT PRIMARY KEY,
+  sky_condition TEXT,
+  explanation TEXT
+)
+")
+
+# create incidents table, Link the incidents and flights tables
+result <- dbExecute(mydb, "DROP TABLE IF EXISTS incidents")
+result <- dbExecute(mydb, "
+CREATE TABLE IF NOT EXISTS incidents (
+  iid INTEGER PRIMARY KEY,
+  fid INTEGER,
+  wlsize TEXT,
+  impact TEXT,
+  altitude INTEGER CHECK (altitude >= 0),
+  conditions INTEGER,
+  FOREIGN KEY (fid) REFERENCES flights(fid),
+  FOREIGN KEY (conditions) REFERENCES conditions(cid)
+)
+")
+```
+
+```{r describeTables, echo = FALSE, eval = FALSE}
+# display the table structure
+dbGetQuery(mydb, "DESCRIBE flights")
+dbGetQuery(mydb, "DESCRIBE airports")
+dbGetQuery(mydb, "DESCRIBE airports")
+dbGetQuery(mydb, "DESCRIBE incidents")
+```
+
+```{r insertDataAndTest,echo = FALSE, eval = FALSE,warning = FALSE}
+# insert data to tables
+dbExecute(mydb, "
+INSERT INTO airports (aid, airportName, airportState, airportCode) VALUES
+(1, 'Logan International Airport', 'Massachusetts', 'BOS'),
+(2, 'Los Angeles International Airport', 'California', 'LAX')
+")
+
+dbExecute(mydb, "
+INSERT INTO flights (fid, date, originAirport, airlineName, aircraftType, isHeavy) VALUES
+(1, '2024-07-01 08:30:00', 1, 'American Airlines', 'Boeing 737', FALSE),
+(2, '2024-07-01 09:45:00', 2, 'Delta Airlines', 'Airbus A320', TRUE)
+")
+
+dbExecute(mydb, "
+INSERT INTO conditions (cid, sky_condition, explanation) VALUES
+(1, 'Some Cloud', 'Partially cloudy'),
+(2, 'No Cloud', 'Clear skies'),
+(3, 'Overcast', 'Completely covered skies')
+")
+
+dbExecute(mydb, "
+INSERT INTO incidents (iid, fid, wlsize, impact, altitude, conditions) VALUES
+(1, 1, 'Small', 'Minor', 500, 1),
+(2, 1, 'Medium', 'Moderate', 1500, 2),
+(3, 2, 'Large', 'Severe', 200, 3)
+")
+
+# Query the data
+dbGetQuery(mydb, "SELECT * FROM airports")
+dbGetQuery(mydb, "SELECT * FROM flights")
+dbGetQuery(mydb, "SELECT * FROM conditions")
+dbGetQuery(mydb, "SELECT * FROM incidents")
+
+# Query the table airports
+dbGetQuery(mydb, "SELECT * FROM airports WHERE airportState = 'California'")
+
+# join the table airports and flights
+dbGetQuery(mydb, "
+SELECT f.fid, f.airlineName, a.airportName, a.airportState
+FROM flights f
+JOIN airports a ON f.originAirport = a.aid
+WHERE a.airportState = 'Massachusetts'
+")
+
+# check when c.sky_condition = 'Some Cloud'
+some_cloud_incidents <- dbGetQuery(mydb, "
+SELECT i.iid, i.fid, i.impact, i.altitude
+FROM incidents i
+JOIN conditions c ON i.conditions = c.cid
+WHERE c.sky_condition = 'Some Cloud'
+")
+print(some_cloud_incidents)
+
+# delete the data
+dbExecute(mydb, "DELETE FROM incidents WHERE iid IN (1, 2, 3)")
+dbExecute(mydb, "DELETE FROM conditions WHERE cid IN (1, 2, 3)")
+dbExecute(mydb, "DELETE FROM flights WHERE fid IN (1, 2)")
+dbExecute(mydb, "DELETE FROM airports WHERE aid IN (1, 2)")
+```
+
+```{r loadDataIntoDataframe, echo = FALSE, eval = TRUE, warning = FALSE}
+bds.raw <- read.csv("BirdStrikesData-V4-SuF24.csv")
+```
+
+```{r dataCleaningHandleMissingData, echo = FALSE, warning = FALSE}
+# handling missing originstate, airline and airport names
+bds.raw$origin_state[is.na(bds.raw$origin_state) | bds.raw$origin_state == "" | bds.raw$origin_state == "N/A"] <- "unknown"
+bds.raw$dep_airport[is.na(bds.raw$dep_airport) | bds.raw$dep_airport == "" | bds.raw$dep_airport == "N/A"] <- "unknown"
+bds.raw$airline[is.na(bds.raw$airline) | bds.raw$airline == "" | bds.raw$airline == "N/A"] <- "unknown"
+```
+
+```{r generateAidAndFidForDataFrame,echo = FALSE, warning = FALSE}
+# generate aid for each unique airport in the dataframe
+unique_airports <- unique(na.omit(bds.raw$dep_airport))
+airport_ids <- seq_along(unique_airports)  
+airport_mapping <- setNames(airport_ids, unique_airports)
+bds.raw$aid <- airport_mapping[bds.raw$dep_airport]
+
+# generate fid for flights in the dataframe
+bds.raw$fid <- seq_along(bds.raw$iid) 
+```
+
+```{r insertDataToTableAirports, echo = FALSE, warning = FALSE}
+# select the data
+airports_to_insert <- unique(bds.raw[, c("aid", "dep_airport", "origin_state")])
+names(airports_to_insert)[names(airports_to_insert) == "dep_airport"] <- "airportName"
+names(airports_to_insert)[names(airports_to_insert) == "origin_state"] <- "airportState"
+
+# write the date to the table
+result <- dbWriteTable(mydb, "airports", airports_to_insert, append = TRUE, row.names = FALSE)
+```
+
+```{r insertDataToTableFlights, echo = FALSE, warning = FALSE}
+# clean the data
+bds.raw$flight_date <- as.Date(bds.raw$flight_date, format = "%m/%d/%y")
+bds.raw$heavy_flag <-  as.integer(tolower(bds.raw$heavy_flag) == "yes")
+
+# select the data
+flights_to_insert <- unique(bds.raw[, c("fid", "flight_date", "aid","airline", "aircraft","heavy_flag")])
+names(flights_to_insert)[names(flights_to_insert) == "flight_date"] <- "date"
+names(flights_to_insert)[names(flights_to_insert) == "aid"] <- "originAirport"
+names(flights_to_insert)[names(flights_to_insert) == "airline"] <- "airlineName"
+names(flights_to_insert)[names(flights_to_insert) == "aircraft"] <- "aircraftType"
+names(flights_to_insert)[names(flights_to_insert) == "heavy_flag"] <- "isHeavy"
+
+# write the date to the table
+result <- dbWriteTable(mydb, "flights", flights_to_insert, append = TRUE, row.names = FALSE)
+```
+
+```{r insertDataToTableConditions, echo = FALSE, warning = FALSE}
+# select the data
+unique_sky_conditions <- unique(na.omit(bds.raw$sky_conditions))
+conditions_df <- data.frame(
+  sky_condition = unique_sky_conditions,
+  explanation = rep("", length(unique_sky_conditions))
+)
+# write the date to the table
+result <- dbWriteTable(mydb, "conditions", conditions_df, append = TRUE, row.names = FALSE)
+```
+
+```{r insertDataToTableIncidents, echo = FALSE, warning = FALSE}
+# clean the data
+# ensure altitude_ft higher than 0
+bds.raw$altitude_ft <- ifelse(bds.raw$altitude_ft < 0, NA, bds.raw$altitude_ft)
+
+# create a mapping
+conditions_data <- dbGetQuery(mydb, "SELECT cid, sky_condition FROM conditions")
+condition_map <- setNames(conditions_data$cid, conditions_data$sky_condition)
+bds.raw$conditions <- condition_map[bds.raw$sky_conditions]
+
+# select the data
+incidents_to_insert <- bds.raw[, c("iid", "fid", "wildlife_size", "impact", "altitude_ft", "conditions")]
+names(incidents_to_insert)[names(incidents_to_insert) == "wildlife_size"] <- "wlsize"
+names(incidents_to_insert)[names(incidents_to_insert) == "altitude_ft"] <- "altitude"
+
+# write the date to the table
+result <- dbWriteTable(mydb, "incidents", incidents_to_insert, append = TRUE, row.names = FALSE)
+```
+
+```{r enableForeignKey,echo = FALSE}
+# enable foreign key checks
+result <- dbExecute(mydb, "SET foreign_key_checks = 1;")
+```
+
+```{r showTables, echo=FALSE, eval=FALSE}
+# display the first 5 entries from the airports table
+airports_sample <- dbGetQuery(mydb, "SELECT * FROM airports LIMIT 5")
+print(airports_sample)
+
+# display the first 5 entries from the flights table
+flights_sample <- dbGetQuery(mydb, "SELECT * FROM flights LIMIT 5")
+print(flights_sample)
+
+# display the conditions table
+conditions <- dbGetQuery(mydb, "SELECT * FROM conditions")
+print(conditions)
+
+# display the first 5 entries from the incidents table
+incidents_sample <- dbGetQuery(mydb, "SELECT * FROM incidents LIMIT 5")
+print(incidents_sample)
+```
+
+## Top Airlines with Strikes
+```{r topAirlinesWithStrikes, echo = FALSE, warning = FALSE}
+# SQL query to find airline with most bird strike incidents
+query_top_airlines <-"
+SELECT flights.airlineName, COUNT(DISTINCT incidents.iid) AS IncidentCount
+FROM incidents
+JOIN flights ON flights.fid = incidents.fid
+GROUP BY flights.airlineName
+ORDER BY IncidentCount DESC
+LIMIT 5;"
+topAirlines<- dbGetQuery(mydb, query_top_airlines)
+print(topAirlines)
+```
+
+## Analysis by Airport
+```{r analysisByAirport, echo = FALSE, warning = FALSE}
+# SQL query to find airports with above average number of bird strike incidents
+query_airport_analysis <- "
+SELECT airports.airportName, COUNT(DISTINCT incidents.iid) AS NumberOfIncidents
+FROM incidents
+JOIN flights ON incidents.fid = flights.fid
+JOIN airports ON flights.originAirport = airports.aid
+GROUP BY airports.airportName
+HAVING NumberOfIncidents > (
+    SELECT AVG(IncidentCount) FROM (
+        SELECT COUNT(DISTINCT incidents.iid) AS IncidentCount
+        FROM incidents
+        JOIN flights ON incidents.fid = flights.fid
+        GROUP BY flights.originAirport
+    ) AS Average
+)
+ORDER BY NumberOfIncidents DESC
+LIMIT 5;
+"
+airportAnalysis<- dbGetQuery(mydb, query_airport_analysis)
+print(airportAnalysis)
+```
+## Analysis by Year
+```{r strikeDataByYear, echo = FALSE, warning = FALSE}
+# Execute the SQL query and store the result in a dataframe
+
+data_by_year <- "
+SELECT YEAR(date) AS Year, COUNT(*) AS NumberOfStrikes
+FROM incidents
+JOIN flights ON incidents.fid = flights.fid
+WHERE date IS NOT NULL
+GROUP BY YEAR(date)
+ORDER BY YEAR(date)
+"
+strike_data_by_year <- dbGetQuery(mydb, data_by_year)
+
+# install the library
+library(knitr)
+library(kableExtra)
+
+# Assuming strike_data_by_year has two columns: 'Year' and 'NumberOfStrikes'
+# Transpose the data frame
+transposed_data <- as.data.frame(t(strike_data_by_year))
+
+# Rename columns (since transposing swaps row names and column names)
+colnames(transposed_data) <- transposed_data[1, ]  # Set first row as column names
+transposed_data <- transposed_data[-1, ]  # Remove the first row now that it's used as column names
+
+# Format the dataframe using kable and kableExtra
+formatted_table <- kable(transposed_data, format = "html", caption = "Number of Wildlife Strikes Per Year") %>%
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = F) %>%
+  column_spec(1, bold = T) %>%
+  column_spec(2, width = "10em")
+
+# Display the formatted table
+formatted_table
+```
+
+## Trend by Year
+```{r trendDataByYear, echo = FALSE, warning = FALSE}
+# convert 'Year' to a numeric 
+strike_data_by_year$Year <- as.numeric(as.character(strike_data_by_year$Year))
+# create the line plot
+plot(strike_data_by_year$Year, strike_data_by_year$NumberOfStrikes, type = 'o', col = 'blue',
+     xlab = "Year", ylab = "Number of Wildlife Strikes",
+     main = "Annual Trend of Wildlife Strikes",
+     pch = 16, lty = 1, cex = 0.8)
+# add grid lines 
+grid(nx = NULL, ny = NULL, col = "gray", lty = "dotted")
+# add a legend 
+legend("topright", legend = "Number of Strikes", col = "blue", lty = 1, pch = 16)
+
+```
+
+```{sql dropUpdateLog, connection="mydb", echo = FALSE, warning = FALSE}
+DROP TABLE IF EXISTS update_log;
+```
+
+```{sql createUpdateLog, connection="mydb", echo = FALSE, warning = FALSE}
+CREATE TABLE IF NOT EXISTS update_log (
+    log_id INT AUTO_INCREMENT PRIMARY KEY,
+    table_name VARCHAR(255),
+    modification_type VARCHAR(50),
+    modification_datetime DATE,
+    original_values TEXT);
+```
+
+
+```{sql dropUpdateIncidentProcedure, connection="mydb", echo = FALSE, warning = FALSE}
+DROP PROCEDURE IF EXISTS UpdateIncident
+```
+
+```{sql createUpdateIncidentProcedure, connection="mydb", echo = FALSE, warning = FALSE}
+CREATE PROCEDURE UpdateIncident(
+    IN param_iid INTEGER, 
+    IN param_new_wlsize TEXT, 
+    IN param_new_impact TEXT, 
+    IN param_new_altitude INTEGER,
+    IN param_new_conditions INTEGER
+)
+BEGIN
+    -- Declare variable to hold original values
+    DECLARE orig_wlsize TEXT;
+    DECLARE orig_impact TEXT;
+    DECLARE orig_altitude INTEGER;
+    DECLARE orig_conditions INTEGER;
+
+    -- Select original data into variables
+    SELECT wlsize, impact, altitude, conditions INTO orig_wlsize, orig_impact, orig_altitude, orig_conditions
+    FROM incidents
+    WHERE iid = param_iid;
+
+    -- Update the incident
+    UPDATE incidents
+    SET wlsize = param_new_wlsize, 
+        impact = param_new_impact, 
+        altitude = param_new_altitude,
+        conditions = param_new_conditions
+    WHERE iid = param_iid;
+
+    -- Insert log entry
+    INSERT INTO update_log(table_name, modification_type, modification_datetime, original_values)
+    VALUES ('incidents', 'update', NOW(), CONCAT('wlsize: ', orig_wlsize, ', impact: ', orig_impact, ', altitude: ', orig_altitude, ', conditions: ', orig_conditions));
+END
+
+```
+
+```{r testUpdateIncidentProcedure, echo=FALSE, eval=FALSE}
+dbExecute(mydb, "CALL UpdateIncident(202152	, 'Medium', 'High', 200, 2)")
+updated_incident <- dbGetQuery(mydb, "SELECT * FROM incidents WHERE iid = 202152")
+print(updated_incident)
+log_entry <- dbGetQuery(mydb, "SELECT * FROM update_log")
+print(log_entry)
+```
+
+```{r disconectDB, echo=FALSE}
+result <- dbDisconnect(mydb)
+```
